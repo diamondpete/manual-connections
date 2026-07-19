@@ -40,6 +40,36 @@ if [[ -z $PIA_USER || -z $PIA_PASS ]]; then
   exit 1
 fi
 
+# Tear down any active session left over from a previous run so we always
+# start clean - covers both connection methods, since the config may have
+# switched between OpenVPN and WireGuard since the last run.
+echo "Checking for active sessions from a previous run..."
+
+# OpenVPN: prefer the pid file, fall back to matching our config path.
+old_pids=""
+if [[ -f $PIA_INFO_DIR/pia_pid ]]; then
+  old_pids=$(cat "$PIA_INFO_DIR/pia_pid")
+fi
+old_pids="$old_pids $(pgrep -f "$PIA_INFO_DIR/pia.ovpn" 2>/dev/null)"
+for pid in $old_pids; do
+  if [[ $(ps -p "$pid" -o comm= 2>/dev/null) == "openvpn" ]]; then
+    echo "Killing OpenVPN process $pid from a previous run..."
+    kill "$pid"
+    for _ in {1..5}; do
+      ps -p "$pid" >/dev/null 2>&1 || break
+      sleep 1
+    done
+  fi
+done
+rm -f "$PIA_INFO_DIR/pia_pid" "$PIA_INFO_DIR/route_info"
+
+# WireGuard: bring the pia interface down if it is up.
+if command -v wg >/dev/null && wg show pia >/dev/null 2>&1; then
+  echo "Bringing down the WireGuard 'pia' interface from a previous run..."
+  wg-quick down pia
+fi
+echo
+
 export PIA_USER PIA_PASS PIA_AUTOCONNECT PIA_PF PIA_DNS \
   MAX_LATENCY PREFERRED_REGION tunX
 

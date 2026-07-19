@@ -1,4 +1,4 @@
-#!/usr/local/bin/bash
+#!/usr/bin/env bash
 # Copyright (C) 2020 Private Internet Access, Inc.
 #
 # Permission is hereby granted, free of charge, to any person obtaining a copy
@@ -19,83 +19,62 @@
 # OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 # SOFTWARE.
 
-# This script has not been completely edited to make it 
-# BSD-compatible because I don't use wireguard.  
+. "$(dirname "$0")/common.sh"
 
-# This function allows you to check if the required tools have been installed.
-function check_tool() {
-  cmd=$1
-  package=$2
-  if ! command -v $cmd &>/dev/null
-  then
-    echo "$cmd could not be found"
-    echo "Please install $package"
-    exit 1
-  fi
-}
-# Now we call the function to make sure we can use wg-quick, curl and jq.
+banner connect_to_wireguard_with_token.sh
 check_tool wg-quick wireguard-tools
-check_tool curl curl
-check_tool jq jq
+check_tool curl
+check_tool jq
 
-# PIA currently does not support IPv6. In order to be sure your VPN
-# connection does not leak, it is best to disabled IPv6 altogether.
-
-<< 'MULTILINE-COMMENT'
-( This doesn't work on FreeBSD. IPv6 is instead disabled in 
-  openvpn_config/standard.ovpn and strong.ovpn )
-if [ $(sysctl -n net.ipv6.conf.all.disable_ipv6) -ne 1 ] ||
-  [ $(sysctl -n net.ipv6.conf.default.disable_ipv6) -ne 1 ]
-then
-  echo 'You should consider disabling IPv6 by running:'
-  echo 'sysctl -w net.ipv6.conf.all.disable_ipv6=1'
-  echo 'sysctl -w net.ipv6.conf.default.disable_ipv6=1'
-fi
-MULTILINE-COMMENT
+# PIA currently does not support IPv6. On FreeBSD there are no
+# net.ipv6.conf.* sysctls to flip; IPv6 leaking is prevented in the
+# OpenVPN configs via pull-filter, and for WireGuard AllowedIPs
+# only routes IPv4 (0.0.0.0/0).
 
 # Check if the mandatory environment variables are set.
-if [[ ! $WG_SERVER_IP || ! $WG_HOSTNAME || ! $PIA_TOKEN ]]; then
-  echo This script requires 3 env vars:
-  echo WG_SERVER_IP - IP that you want to connect to
-  echo WG_HOSTNAME  - name of the server, required for ssl
-  echo PIA_TOKEN    - your authentication token
+if [[ -z $WG_SERVER_IP || -z $WG_HOSTNAME || -z $PIA_TOKEN ]]; then
+  echo -e "${red}This script requires 3 env vars:"
+  echo "WG_SERVER_IP - IP that you want to connect to"
+  echo "WG_HOSTNAME  - name of the server, required for ssl"
+  echo "PIA_TOKEN    - your authentication token"
   echo
-  echo You can also specify optional env vars:
+  echo "You can also specify optional env vars:"
   echo "PIA_PF                - enable port forwarding"
   echo "PAYLOAD_AND_SIGNATURE - In case you already have a port."
   echo
-  echo An easy solution is to just run get_region_and_token.sh
-  echo as it will guide you through getting the best server and
-  echo also a token. Detailed information can be found here:
-  echo https://github.com/pia-foss/manual-connections
+  echo "An easy solution is to just run ./run_setup.sh, which reads"
+  echo -e "everything from $PIA_CONFIG and guides the full process.${nc}"
   exit 1
 fi
 
+# FreeBSD's wg-quick (wireguard-tools pkg) reads configs from
+# /usr/local/etc/wireguard; Linux uses /etc/wireguard.
+if [[ $(uname) == "FreeBSD" ]]; then
+  wg_conf_dir="/usr/local/etc/wireguard"
+else
+  wg_conf_dir="/etc/wireguard"
+fi
+
 # Create ephemeral wireguard keys, that we don't need to save to disk.
-privKey="$(wg genkey)"
-export privKey
-pubKey="$( echo "$privKey" | wg pubkey)"
-export pubKey
+privKey=$(wg genkey)
+pubKey=$(echo "$privKey" | wg pubkey)
 
 # Authenticate via the PIA WireGuard RESTful API.
 # This will return a JSON with data required for authentication.
 # The certificate is required to verify the identity of the VPN server.
-# In case you didn't clone the entire repo, get the certificate from:
-# https://github.com/pia-foss/manual-connections/blob/master/ca.rsa.4096.crt
 # In case you want to troubleshoot the script, replace -s with -v.
-echo Trying to connect to the PIA WireGuard API on $WG_SERVER_IP...
+echo "Trying to connect to the PIA WireGuard API on $WG_SERVER_IP..."
 wireguard_json="$(curl -s -G \
   --connect-to "$WG_HOSTNAME::$WG_SERVER_IP:" \
   --cacert "ca.rsa.4096.crt" \
   --data-urlencode "pt=${PIA_TOKEN}" \
   --data-urlencode "pubkey=$pubKey" \
-  "https://${WG_HOSTNAME}:1337/addKey" )"
+  "https://${WG_HOSTNAME}:1337/addKey")"
 export wireguard_json
-echo "$wireguard_json"
 
 # Check if the API returned OK and stop this script if it didn't.
-if [ "$(echo "$wireguard_json" | jq -r '.status')" != "OK" ]; then
-  >&2 echo "Server did not return OK. Stopping now."
+if [[ $(echo "$wireguard_json" | jq -r '.status') != "OK" ]]; then
+  >&2 echo -e "${red}Server did not return OK. Stopping now.${nc}"
   exit 1
 fi
 
@@ -103,25 +82,24 @@ fi
 # get multi-hop running with both WireGuard and OpenVPN by playing with
 # these scripts. Feel free to fork the project and test it out.
 echo
-echo Trying to disable a PIA WG connection in case it exists...
-wg-quick down pia && echo Disconnected!
+echo "Trying to disable a PIA WG connection in case it exists..."
+wg-quick down pia && echo -e "${green}PIA WG connection disabled!${nc}"
 echo
 
-# Create the WireGuard config based on the JSON received from the API
-# In case you want this section to also add the DNS setting, please
-# start the script with PIA_DNS=true.
+# Create the WireGuard config based on the JSON received from the API.
 # This uses a PersistentKeepalive of 25 seconds to keep the NAT active
 # on firewalls. You can remove that line if your network does not
 # require it.
-echo -n "Trying to write /etc/wireguard/pia.conf... "
-mkdir -p /etc/wireguard
-if [ "$PIA_DNS" == true ]; then
-  dnsServer="$(echo "$wireguard_json" | jq -r '.dns_servers[0]')"
-  echo Trying to set up DNS to $dnsServer. In case you do not have resolvconf,
-  echo this operation will fail and you will not get a VPN. If you have issues,
-  echo start this script without PIA_DNS.
+if [[ $PIA_DNS == "true" ]]; then
+  dnsServer=$(echo "$wireguard_json" | jq -r '.dns_servers[0]')
+  echo "Trying to set up DNS to $dnsServer. In case you do not have resolvconf,"
+  echo "this operation will fail and you will not get a VPN. If you have issues,"
+  echo "set PIA_DNS=false in $PIA_CONFIG."
+  echo
   dnsSettingForVPN="DNS = $dnsServer"
 fi
+echo -n "Trying to write $wg_conf_dir/pia.conf... "
+mkdir -p "$wg_conf_dir"
 echo "
 [Interface]
 Address = $(echo "$wireguard_json" | jq -r '.peer_ip')
@@ -132,43 +110,39 @@ PersistentKeepalive = 25
 PublicKey = $(echo "$wireguard_json" | jq -r '.server_key')
 AllowedIPs = 0.0.0.0/0
 Endpoint = ${WG_SERVER_IP}:$(echo "$wireguard_json" | jq -r '.server_port')
-" > /etc/wireguard/pia.conf || exit 1
-echo OK!
+" > "$wg_conf_dir/pia.conf" || exit 1
+chmod 600 "$wg_conf_dir/pia.conf"
+echo -e "${green}OK!${nc}"
 
 # Start the WireGuard interface.
 # If something failed, stop this script.
 # If you get DNS errors because you miss some packages,
 # just hardcode /etc/resolv.conf to "nameserver 10.0.0.242".
 echo
-echo Trying to create the wireguard interface...
+echo "Trying to create the wireguard interface..."
 wg-quick up pia || exit 1
-echo "The WireGuard interface got created.
+echo -e "${green}The WireGuard interface got created.${nc}
+
 At this point, internet should work via VPN.
 
---> to disconnect the VPN, run:
-$ wg-quick down pia"
+To disconnect the VPN, run:
+
+--> ${green}wg-quick down pia${nc} <--
+"
 
 # This section will stop the script if PIA_PF is not set to "true".
-if [ "$PIA_PF" != true ]; then
+if [[ $PIA_PF != "true" ]]; then
+  echo "If you want to also enable port forwarding, set PIA_PF=true"
+  echo "in $PIA_CONFIG, or run:"
+  echo -e "$ ${green}PIA_TOKEN=xxx PF_GATEWAY=$WG_SERVER_IP" \
+    "PF_HOSTNAME=$WG_HOSTNAME ./port_forwarding.sh${nc}"
   echo
-  echo If you want to also enable port forwarding, please start the script
-  echo with the env var PIA_PF=true. Example:
-  echo $ WG_SERVER_IP=10.0.0.3 WG_HOSTNAME=piaserver401 \
-    PIA_TOKEN=\"\$token\" PIA_PF=true \
-    ./connect_to_wireguard_with_token.sh
-  exit
+  echo "The location used must be port forwarding enabled, or this will fail."
+  exit 0
 fi
 
-echo -n "
-#This script got started with PIA_PF=true. We will allow WireGuard to fully
-#initialize and after that we will try to enable PF by running the following
-#command:
-#$ PIA_TOKEN=$PIA_TOKEN \\
-#  PF_GATEWAY=\"$(echo "$wireguard_json" | jq -r '.server_vip')\" \\
-#  PF_HOSTNAME=\"$WG_HOSTNAME\" \\
-#  ./port_forwarding.sh
-  
-Starting PF in "
+echo -n "This script got started with PIA_PF=true.
+Allowing WireGuard to fully initialize, then starting port forwarding in "
 for i in {5..1}; do
   echo -n "$i... "
   sleep 1
@@ -178,8 +152,5 @@ echo
 
 PIA_TOKEN=$PIA_TOKEN \
   PF_GATEWAY="$(echo "$wireguard_json" | jq -r '.server_vip')" \
-export PF_GATEWAY
   PF_HOSTNAME="$WG_HOSTNAME" \
-export PF_HOSTNAME
-
   ./port_forwarding.sh

@@ -1,7 +1,7 @@
-#!/usr/local/bin/bash
+#!/usr/bin/env bash
 
 # Remove process and route information when connection closes
-rm -rf /pia-info/pia_pid /pia-info-manual/route_info
+rm -f /pia-info/pia_pid /pia-info/route_info
 
 # Replace resolv.conf with original stored as backup
 cat /pia-info/resolv_conf_backup > /etc/resolv.conf

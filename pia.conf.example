@@ -1,0 +1,37 @@
+# PIA manual-connections configuration.
+#
+# ALL settings live in this one file. Copy it into place and edit:
+#   mkdir -p /pia-info && cp pia.conf.example /pia-info/pia.conf
+#   chmod 600 /pia-info/pia.conf
+# (Or keep it elsewhere and point the PIA_CONFIG env var at it.)
+#
+# The file is sourced by bash: no spaces around '=', quote values with spaces.
+
+# PIA account credentials (username is p followed by 7 digits).
+PIA_USER=p1234567
+PIA_PASS=
+
+# Connection method: wireguard | openvpn_udp_strong | openvpn_tcp_strong
+PIA_AUTOCONNECT=wireguard
+
+# Request a forwarded port after connecting.
+PIA_PF=true
+
+# Use PIA DNS servers.
+PIA_DNS=false
+
+# Ignore regions with a ping latency above this many seconds.
+MAX_LATENCY=0.1
+
+# Connect to a specific region id (e.g. swiss) instead of the fastest one.
+# Leave empty to auto-select by latency.
+# Region ids: curl -s https://serverlist.piaservers.net/vpninfo/servers/v6 | head -1 | jq -r '.regions[].id'
+PREFERRED_REGION=
+
+# OpenVPN tunnel device (OpenVPN connections only).
+tunX=tun0
+
+# Send the forwarded port to Transmission whenever it changes.
+TRANSMISSION_NOTIFY=true
+transUser=
+transPass=

@@ -1,23 +1,25 @@
 # Manual PIA VPN Connections
 
-### This is a FreeBSD/FreeNAS fork of the original Linux scripts at https://github.com/pia-foss/manual-connections.  
+### This is a FreeBSD/FreeNAS fork of the original Linux scripts at https://github.com/pia-foss/manual-connections.
 Fork Notes:
-1. The scripts are set up to work via either OpenVPN or Wireguard.  Comment out the one you don't use in `run_setup.sh`. 
-2. If you clone this repository, I suggest you change the directory name to `/pia` because that's the directory name I used. 
-3. `run_setup.sh` is the script you call to start the whole process.  It calls the following script and so on.  If you're using port forwarding, `port_forwarding.sh` and `refresh_pia_port.sh` are the last scripts called.  The port needs to be refreshed about every 15 minutes.  I separated out the code in the latter script so it could be called by a cron job inside the jail.  That way the script doesn't need to be left running in a tmux session or something.  Cron should look like `*/15 * * * * /pia/refresh_pia_port.sh > /pia-info/refresh.log 2>&1` and run as `root`.  The output will be in `/pia-info/refresh.log`.
-4. I changed `run_setup.sh` from a question-answer format to simply a settings/config file for the process.  Just edit to your desired settings.  PIA username and password are handled as an external file `/pia-info/pia_creds.txt` in the old style: first line user name, second line password.  If you don't want such a file sitting on your server, you can get the question-answer code from the Linux script and change that part.
-5. In `port_forwarding.sh`, I added a transmission command to send the port number to transmission-rpc.  For this to work, transmission should be running before you start the scripts.  (OpenVPN should NOT be running, as the scripts configure and start it. `service openvpn stop`)
-6. If you have trouble, carefully read the output to see where it failed.  I added a printed header to each script when it starts so you can see where you are (not `openvpn_up.sh` because it is run by OpenVPN).  Should OpenVPN fail to start, I added a command to print `/pia-info/debug_info` to screen so you can see what was going on with OpenVPN.  The scripts also store a bunch of other stuff in `/pia-info`. 
-7. At least for OpenVPN, the network interface used is tun0.  If you start run_setup.sh interactively, a later script will check for tun0 and offer to kill the openvpn process that started it.  Otherwise, it will create another tun# and report everything is great, but you won't actually have your open port in transmission.
-8. I start `run_setup.sh` with an @reboot cron job inside the jail so it starts when the jail starts: `@reboot cd /pia && /pia/run_setup.sh > /pia-info/startup.log 2>&1`.  This puts all the output in a log in `/pia-info`.  If the jail just started, there shouldn't be any openvpn process or tun0, so that shouldn't be a problem.
+1. **All settings live in one config file.** Copy `pia.conf.example` to `/pia-info/pia.conf`, `chmod 600` it, and edit. It holds the PIA credentials (`PIA_USER`/`PIA_PASS`), connection method (`PIA_AUTOCONNECT`: `wireguard`, `openvpn_udp_strong`, or `openvpn_tcp_strong`), port forwarding (`PIA_PF`), DNS (`PIA_DNS`), latency limit (`MAX_LATENCY`), an optional fixed region (`PREFERRED_REGION`), the OpenVPN tunnel device (`tunX`), and the Transmission settings (`TRANSMISSION_NOTIFY`, `transUser`, `transPass`). The old `/pia-info/pia_creds.txt` file is no longer used. You can point the scripts at a different config location with the `PIA_CONFIG` environment variable.
+2. `run_setup.sh` is the script you call to start the whole process; it is fully non-interactive so it can run from cron. It calls `get_token.sh`, then `get_region.sh`, which hands off to the right connect script, which (with `PIA_PF=true`) hands off to `port_forwarding.sh` and finally `refresh_pia_port.sh`.
+3. The forwarded port needs to be refreshed about every 15 minutes or PIA deletes it, so run `refresh_pia_port.sh` from cron (as `root`) inside the jail: `*/15 * * * * /pia/refresh_pia_port.sh > /pia-info/refresh.log 2>&1`. No tmux session needed; output lands in `/pia-info/refresh.log`.
+4. `refresh_pia_port.sh` sends the forwarded port number to Transmission via `transmission-remote`. Set `TRANSMISSION_NOTIFY=false` in the config to disable this. It only notifies when the port actually changes (state is kept in `/pia-info/pf/transmission_port`); a failed notify is retried on the next refresh. Transmission should be running before you start the scripts. (OpenVPN should NOT be running, as the scripts configure and start it: `service openvpn stop`.)
+5. If you have trouble, carefully read the output to see where it failed. Each script prints a header when it starts so you can see where you are (not `openvpn_up.sh` because it is run by OpenVPN). Should OpenVPN fail to start, the script prints `/pia-info/debug_info` to screen so you can see what went wrong. The scripts store all state in `/pia-info`.
+6. For OpenVPN, the network interface is pinned to the `tunX` device from the config (default `tun0`). If that device already exists, the connect script kills the openvpn process that owns it (it asks first when run interactively) instead of silently creating another tun# — which would report success while your forwarded port goes nowhere.
+7. I start `run_setup.sh` with an @reboot cron job inside the jail so it starts when the jail starts: `@reboot cd /pia && /pia/run_setup.sh > /pia-info/startup.log 2>&1`. This puts all the output in a log in `/pia-info`. If the jail just started, there shouldn't be any openvpn process or tun device, so that shouldn't be a problem.
+8. Synced with upstream (Feb 2026): tokens now come from PIA's simple `v2/token` API endpoint (no more meta-server certificate dance), the server list moved to `v6`, and OpenVPN moved to ports 8080 (udp) / 8443 (tcp) with standard encryption removed — `strong.ovpn` is the only profile now. WireGuard configs are written to `/usr/local/etc/wireguard` on FreeBSD (`/etc/wireguard` on Linux).
 
 End of Fork Notes
 
 This repository contains documentation on how to create native WireGuard and OpenVPN connections to Private Internet Access' (PIA) __NextGen network__, and also on how to enable Port Forwarding in case you require this feature. You will find a lot of information below. However if you prefer quick test, here is the __TL/DR__:
 
 ```
-git clone https://github.com/glorious1/manual-connections.git
-cd manual-connections # I changed the directory name to pia.
+git clone https://github.com/diamondpete/manual-connections.git pia
+cd pia
+mkdir -p /pia-info && cp pia.conf.example /pia-info/pia.conf
+chmod 600 /pia-info/pia.conf   # then edit it with your settings
 ./run_setup.sh
 ```
 
@@ -49,10 +51,13 @@ This service can be used only AFTER establishing a VPN connection.
 In order to help you use VPN services and PF on any device, we have prepared a few bash scripts that should help you through the process of setting everything up. The scripts also contain a lot of comments, just in case you require detailed information regarding how the technology works. The functionality is controlled via environment variables, so that you have an easy time automating your setup.
 
 Here is a list of scripts you could find useful:
- * [Get the best region and a token](get_region_and_token.sh): This script helps you to get the best region and also to get a token for VPN authentication. Adding your PIA credentials to env vars `PIA_USER` and `PIA_PASS` will allow the script to also get a VPN token. The script can also trigger the WireGuard script to create a connection, if you specify `PIA_AUTOCONNECT=wireguard` or `PIA_AUTOCONNECT=openvpn_udp_standard`
+ * [Run the whole setup](run_setup.sh): Reads `/pia-info/pia.conf` and drives all the scripts below, non-interactively.
+ * [Get a token](get_token.sh): Authenticates with your `PIA_USER`/`PIA_PASS` and saves a 24-hour token to `/pia-info/token`.
+ * [Get the best region](get_region.sh): Finds the lowest-latency region (or validates `PREFERRED_REGION`) and, based on `PIA_AUTOCONNECT`, triggers the WireGuard or OpenVPN connect script.
  * [Connect to WireGuard](connect_to_wireguard_with_token.sh): This script allows you to connect to the VPN server via WireGuard.
  * [Connect to OpenVPN](connect_to_openvpn_with_token.sh): This script allows you to connect to the VPN server via OpenVPN.
  * [Enable Port Forwarding](port_forwarding.sh): Enables you to add Port Forwarding to an existing VPN connection. Adding the environment variable `PIA_PF=true` to any of the previous scripts will also trigger this script.
+ * [Refresh the forwarded port](refresh_pia_port.sh): Re-binds the port (run it from cron every 15 minutes) and pushes it to Transmission when it changes.
 
 ## Manual setup of PF
 

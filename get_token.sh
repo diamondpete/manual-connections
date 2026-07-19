@@ -21,30 +21,37 @@
 
 . "$(dirname "$0")/common.sh"
 
-banner run_setup.sh
+banner get_token.sh
+check_tool curl
+check_tool jq
 require_root
 
-# Everything is driven by the single config file - no interactive prompts,
-# so this can run unattended from an @reboot cron job.
-if [[ ! -f $PIA_CONFIG ]]; then
-  echo -e "${red}No config file found at $PIA_CONFIG.${nc}"
-  echo "Copy the example into place and fill in your settings:"
-  echo "  mkdir -p $PIA_INFO_DIR && cp pia.conf.example $PIA_CONFIG"
-  echo "  chmod 600 $PIA_CONFIG"
-  exit 1
-fi
-echo "Loaded configuration from $PIA_CONFIG"
+mkdir -p "$PIA_INFO_DIR"
 
 if [[ -z $PIA_USER || -z $PIA_PASS ]]; then
-  echo -e "${red}PIA_USER and PIA_PASS must be set in $PIA_CONFIG.${nc}"
+  echo "PIA_USER and PIA_PASS must be set (in $PIA_CONFIG or the environment)."
   exit 1
 fi
 
-export PIA_USER PIA_PASS PIA_AUTOCONNECT PIA_PF PIA_DNS \
-  MAX_LATENCY PREFERRED_REGION tunX
+echo -n "Checking login credentials... "
+generateTokenResponse=$(curl -s --location --request POST \
+  'https://www.privateinternetaccess.com/api/client/v2/token' \
+  --form "username=$PIA_USER" \
+  --form "password=$PIA_PASS")
 
-./get_token.sh || exit 1
-PIA_TOKEN=$(head -1 "$PIA_INFO_DIR/token")
-export PIA_TOKEN
+token=$(echo "$generateTokenResponse" | jq -r '.token // empty')
+if [[ -z $token ]]; then
+  echo
+  echo -e "${red}Could not authenticate with the login credentials provided!${nc}"
+  exit 1
+fi
+echo -e "${green}OK!${nc}"
 
-./get_region.sh
+# Tokens are valid for 24 hours. BSD date first, GNU date as fallback.
+tokenExpiration=$(date -v+1d 2>/dev/null || date --date='1 day')
+tokenLocation="$PIA_INFO_DIR/token"
+{ echo "$token"; echo "$tokenExpiration"; } > "$tokenLocation" || exit 1
+chmod 600 "$tokenLocation"
+echo "Token saved to $tokenLocation"
+echo "This token will expire in 24 hours, on $tokenExpiration."
+echo

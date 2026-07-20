@@ -26,37 +26,27 @@ check_tool curl
 check_tool jq
 check_tool openvpn
 
-# Check if a manual PIA OpenVPN connection is already initialized on the
-# tunnel device from the config ($tunX). Multi-hop is out of scope.
+# Only a live OpenVPN process we started (recorded in the pid file) blocks a
+# new connection. A leftover $tunX interface with no owner is harmless -
+# OpenVPN reuses it - so it is not worth mentioning. Multi-hop is out of scope.
 pid_filepath="$PIA_INFO_DIR/pia_pid"
-if ifconfig "$tunX" >/dev/null 2>&1; then
-  echo -e "${red}The $tunX adapter already exists; that interface is required"
-  echo -e "for this configuration.${nc}"
-  if [[ -f $pid_filepath ]]; then
-    old_pid=$(cat "$pid_filepath")
-    old_pid_name=$(ps -p "$old_pid" -o comm=)
-    if [[ $old_pid_name == "openvpn" ]]; then
-      echo
-      echo "It seems likely that process $old_pid is an OpenVPN connection"
-      echo "that was established by using this script. Unless it is closed"
-      echo "you would not be able to get a new connection."
-      if [[ -t 0 ]]; then
-        echo -n "Do you want to run $ kill $old_pid (Y/n): "
-        read -r close_connection
-      else
-        # Unattended (cron): kill the stale connection and reconnect.
-        echo "Not running interactively; killing it automatically."
-        close_connection="y"
-      fi
-      if echo "${close_connection:0:1}" | grep -iq n; then
-        echo -e "${red}Closing script. Resolve the $tunX adapter conflict and run the script again.${nc}"
-        exit 1
-      fi
-      echo -e "${green}Killing the existing OpenVPN process and waiting 5 seconds...${nc}"
-      kill "$old_pid"
-      sleep 5
-    fi
+if [[ -f $pid_filepath ]] && [[ $(ps -p "$(cat "$pid_filepath")" -o comm=) == "openvpn" ]]; then
+  old_pid=$(cat "$pid_filepath")
+  echo "An OpenVPN connection from a previous run (process $old_pid) is still active."
+  if [[ -t 0 ]]; then
+    echo -n "Do you want to run $ kill $old_pid (Y/n): "
+    read -r close_connection
+  else
+    echo "Not running interactively; replacing it."
+    close_connection="y"
   fi
+  if echo "${close_connection:0:1}" | grep -iq n; then
+    echo -e "${red}Closing script. Resolve the conflict and run the script again.${nc}"
+    exit 1
+  fi
+  echo -e "${green}Killing the existing OpenVPN process and waiting 5 seconds...${nc}"
+  kill "$old_pid"
+  sleep 5
 fi
 
 # PIA currently does not support IPv6. On FreeBSD there are no

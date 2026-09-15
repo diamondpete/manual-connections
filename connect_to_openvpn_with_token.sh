@@ -148,7 +148,7 @@ ovpn_pid=$(cat "$pid_filepath")
 # Report and exit if connection was not initialized within 10 seconds.
 if [[ $connected != "true" ]]; then
   echo -e "${red}The VPN connection was not established within 10 seconds.${nc}"
-  kill "$ovpn_pid"
+  [[ -n $ovpn_pid ]] && kill "$ovpn_pid" 2>/dev/null
   echo
   echo "OpenVPN debug info from $PIA_INFO_DIR/debug_info:"
   cat "$PIA_INFO_DIR/debug_info"
